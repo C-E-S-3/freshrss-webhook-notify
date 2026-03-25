@@ -1,0 +1,8 @@
+{
+	"name": "Webhook Notify",
+	"author": "Eskridge Homelab",
+	"description": "Sends new articles to a webhook URL as JSON. Supports feed filtering by tag or feed name pattern.",
+	"version": "1.0.0",
+	"entrypoint": "WebhookNotify",
+	"type": "user"
+}

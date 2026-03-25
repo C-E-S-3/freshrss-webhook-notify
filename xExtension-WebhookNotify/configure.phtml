@@ -1,0 +1,76 @@
+<?php
+/** @var WebhookNotifyExtension $this */
+$config = $this->getUserConfiguration();
+$enabled = !empty($config['enabled']);
+$webhookUrl = htmlspecialchars($config['webhook_url'] ?? '', ENT_QUOTES, 'UTF-8');
+$feedFilter = htmlspecialchars($config['feed_filter'] ?? '', ENT_QUOTES, 'UTF-8');
+$timeout = (int)($config['timeout'] ?? 10);
+?>
+
+<form method="post" action="">
+	<input type="hidden" name="_csrf" value="<?= FreshRSS_Auth::csrfToken() ?>" />
+
+	<div class="form-group">
+		<label class="group-name" for="webhook_enabled">
+			Enable webhook
+		</label>
+		<div class="group-controls">
+			<input type="checkbox" id="webhook_enabled" name="webhook_enabled" value="1"
+				<?= $enabled ? 'checked' : '' ?> />
+			<label for="webhook_enabled">Send new articles to the webhook URL</label>
+		</div>
+	</div>
+
+	<div class="form-group">
+		<label class="group-name" for="webhook_url">
+			Webhook URL
+		</label>
+		<div class="group-controls">
+			<input type="url" id="webhook_url" name="webhook_url"
+				value="<?= $webhookUrl ?>"
+				placeholder="https://tracecat.example.com/api/webhooks/..."
+				size="80"
+				pattern="https://.*" />
+			<p class="help">
+				Full webhook URL including the secret path. <strong>Must be HTTPS.</strong>
+			</p>
+		</div>
+	</div>
+
+	<div class="form-group">
+		<label class="group-name" for="feed_filter">
+			Feed filter
+		</label>
+		<div class="group-controls">
+			<input type="text" id="feed_filter" name="feed_filter"
+				value="<?= $feedFilter ?>"
+				placeholder="hacker news, bleeping, krebs, mandiant"
+				size="80" />
+			<p class="help">
+				Comma-separated substrings to match against feed names.
+				Leave empty to send <em>all</em> feeds to the webhook.
+				Matching is case-insensitive.
+			</p>
+		</div>
+	</div>
+
+	<div class="form-group">
+		<label class="group-name" for="timeout">
+			Timeout (seconds)
+		</label>
+		<div class="group-controls">
+			<input type="number" id="timeout" name="timeout"
+				value="<?= $timeout ?>"
+				min="1" max="30" step="1" />
+			<p class="help">
+				HTTP request timeout. Keep low to avoid slowing down feed refresh.
+			</p>
+		</div>
+	</div>
+
+	<div class="form-group form-actions">
+		<div class="group-controls">
+			<button type="submit" class="btn btn-important">Save</button>
+		</div>
+	</div>
+</form>
