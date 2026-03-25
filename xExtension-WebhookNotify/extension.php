@@ -11,7 +11,6 @@ declare(strict_types=1);
  *   - webhook_url: Full URL including secret path (HTTPS enforced)
  *   - feed_filter: Comma-separated feed name substrings to match (empty = all feeds)
  *   - timeout: HTTP request timeout in seconds (default: 10)
- *   - enabled: Whether the webhook is active
  */
 class WebhookNotifyExtension extends Minz_Extension {
 
@@ -35,7 +34,7 @@ class WebhookNotifyExtension extends Minz_Extension {
 	public function onEntryBeforeInsert(FreshRSS_Entry $entry): FreshRSS_Entry {
 		$config = $this->getUserConfiguration();
 
-		if (empty($config['enabled']) || empty($config['webhook_url'])) {
+		if (empty($config['webhook_url'])) {
 			return $entry;
 		}
 
@@ -172,9 +171,12 @@ class WebhookNotifyExtension extends Minz_Extension {
 	public function handleConfigureAction(): void {
 		parent::handleConfigureAction();
 
+		if (FreshRSS_Auth::requestReauth()) {
+			return;
+		}
+
 		if (Minz_Request::isPost()) {
 			$config = [
-				'enabled' => Minz_Request::paramBoolean('webhook_enabled'),
 				'webhook_url' => trim(Minz_Request::paramString('webhook_url')),
 				'feed_filter' => trim(Minz_Request::paramString('feed_filter')),
 				'timeout' => max(1, min(30, Minz_Request::paramInt('timeout') ?: self::DEFAULT_TIMEOUT)),
