@@ -4,11 +4,11 @@ declare(strict_types=1);
 /**
  * FreshRSS Webhook Notify Extension
  *
- * Sends new articles to a configured webhook URL as JSON POST requests.
- * Designed for integration with Tracecat SOAR (or any webhook consumer).
+ * Sends new articles to one or more configured webhook endpoints as JSON POST requests.
+ * Supports generic webhooks (e.g. Tracecat) and GitHub repository dispatch events.
  *
  * Configuration (per-user):
- *   - webhook_url: Full URL including secret path (HTTPS enforced)
+ *   - webhooks: Array of webhook endpoint configs (type, url/repo, token, etc.)
  *   - feed_filter: Comma-separated feed name substrings to match (empty = all feeds)
  *   - timeout: HTTP request timeout in seconds (default: 10)
  */
@@ -19,6 +19,9 @@ class WebhookNotifyExtension extends Minz_Extension {
 
 	/** @var int Default HTTP timeout */
 	private const DEFAULT_TIMEOUT = 10;
+
+	/** @var int Maximum number of webhook endpoints */
+	private const MAX_WEBHOOKS = 10;
 
 	public function init(): void {
 		parent::init();
@@ -33,16 +36,10 @@ class WebhookNotifyExtension extends Minz_Extension {
 	 */
 	public function onEntryBeforeInsert(FreshRSS_Entry $entry): FreshRSS_Entry {
 		$config = $this->getUserConfiguration();
+		$config = $this->migrateConfig($config);
 
-		if (empty($config['webhook_url'])) {
-			return $entry;
-		}
-
-		$webhookUrl = trim((string)$config['webhook_url']);
-
-		// Security: only allow HTTPS endpoints
-		if (!str_starts_with($webhookUrl, 'https://')) {
-			Minz_Log::warning('[WebhookNotify] Skipping non-HTTPS webhook URL');
+		$webhooks = $config['webhooks'] ?? [];
+		if (empty($webhooks)) {
 			return $entry;
 		}
 
@@ -54,9 +51,52 @@ class WebhookNotifyExtension extends Minz_Extension {
 		$payload = $this->buildPayload($entry);
 		$timeout = (int)($config['timeout'] ?? self::DEFAULT_TIMEOUT);
 
-		$this->sendWebhook($webhookUrl, $payload, $timeout);
+		foreach ($webhooks as $webhook) {
+			if (empty($webhook['enabled'])) {
+				continue;
+			}
+
+			$type = $webhook['type'] ?? 'generic';
+
+			if ($type === 'github') {
+				$this->sendGitHubDispatch($webhook, $payload, $timeout);
+			} else {
+				$url = trim((string)($webhook['url'] ?? ''));
+				if ($url !== '' && str_starts_with($url, 'https://')) {
+					$this->sendWebhook($url, $payload, $timeout, []);
+				}
+			}
+		}
 
 		return $entry;
+	}
+
+	/**
+	 * Migrate legacy single-webhook config to multi-webhook format.
+	 *
+	 * @param array<string,mixed> $config
+	 * @return array<string,mixed>
+	 */
+	private function migrateConfig(array $config): array {
+		if (isset($config['webhooks'])) {
+			return $config;
+		}
+
+		// Migrate from legacy single webhook_url
+		if (!empty($config['webhook_url'])) {
+			$config['webhooks'] = [
+				[
+					'type' => 'generic',
+					'url' => trim((string)$config['webhook_url']),
+					'enabled' => true,
+				],
+			];
+		} else {
+			$config['webhooks'] = [];
+		}
+
+		unset($config['webhook_url']);
+		return $config;
 	}
 
 	/**
@@ -116,31 +156,78 @@ class WebhookNotifyExtension extends Minz_Extension {
 			'content' => $content,
 			'feed_title' => $feed !== null ? $feed->name() : 'unknown',
 			'published' => date('c', (int)$entry->date(true)),
-			'author' => $entry->author(),
+			'authors' => $entry->authors(),
 		];
 	}
 
 	/**
-	 * Send the webhook POST request.
+	 * Send a GitHub repository_dispatch event.
+	 *
+	 * @param array<string,mixed> $webhook Webhook config with repo, token, event_type
+	 * @param array<string,mixed> $payload Article payload
+	 * @param int $timeout
+	 */
+	private function sendGitHubDispatch(array $webhook, array $payload, int $timeout): void {
+		$repo = trim((string)($webhook['repo'] ?? ''));
+		$token = trim((string)($webhook['token'] ?? ''));
+		$eventType = trim((string)($webhook['event_type'] ?? 'threat-intel-scrape'));
+
+		if ($repo === '' || $token === '') {
+			Minz_Log::warning('[WebhookNotify] GitHub dispatch missing repo or token');
+			return;
+		}
+
+		// Validate repo format: OWNER/REPO
+		if (!preg_match('#^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$#', $repo)) {
+			Minz_Log::warning('[WebhookNotify] Invalid GitHub repo format: ' . $repo);
+			return;
+		}
+
+		$url = 'https://api.github.com/repos/' . $repo . '/dispatches';
+
+		$dispatchPayload = [
+			'event_type' => $eventType,
+			'client_payload' => [
+				'target_url' => $payload['url'],
+			],
+		];
+
+		$headers = [
+			'Authorization: Bearer ' . $token,
+			'Accept: application/vnd.github+v3+json',
+		];
+
+		$this->sendWebhook($url, $dispatchPayload, $timeout, $headers);
+	}
+
+	/**
+	 * Send a webhook POST request.
 	 *
 	 * Fire-and-forget: failures are logged but never block article insertion.
 	 *
 	 * @param string $url
 	 * @param array<string,mixed> $payload
 	 * @param int $timeout
+	 * @param string[] $extraHeaders Additional HTTP headers
 	 */
-	private function sendWebhook(string $url, array $payload, int $timeout): void {
+	private function sendWebhook(string $url, array $payload, int $timeout, array $extraHeaders): void {
 		$json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 		if ($json === false) {
 			Minz_Log::warning('[WebhookNotify] Failed to encode payload as JSON');
 			return;
 		}
 
+		$headerStr = "Content-Type: application/json\r\n" .
+					 "User-Agent: FreshRSS-WebhookNotify/2.0\r\n";
+
+		foreach ($extraHeaders as $header) {
+			$headerStr .= $header . "\r\n";
+		}
+
 		$context = stream_context_create([
 			'http' => [
 				'method' => 'POST',
-				'header' => "Content-Type: application/json\r\n" .
-							"User-Agent: FreshRSS-WebhookNotify/1.0\r\n",
+				'header' => $headerStr,
 				'content' => $json,
 				'timeout' => $timeout,
 				'ignore_errors' => true,
@@ -153,15 +240,17 @@ class WebhookNotifyExtension extends Minz_Extension {
 
 		$result = @file_get_contents($url, false, $context);
 
+		$title = $payload['title'] ?? $payload['client_payload']['title'] ?? 'unknown';
+
 		// Log failures but don't block article insertion
 		if ($result === false) {
 			$error = error_get_last();
 			Minz_Log::warning(
-				'[WebhookNotify] Webhook request failed: ' .
+				'[WebhookNotify] Webhook request failed (' . $url . '): ' .
 				($error['message'] ?? 'unknown error')
 			);
 		} else {
-			Minz_Log::debug('[WebhookNotify] Webhook sent for: ' . $payload['title']);
+			Minz_Log::debug('[WebhookNotify] Webhook sent to ' . $url . ' for: ' . $title);
 		}
 	}
 
@@ -176,17 +265,63 @@ class WebhookNotifyExtension extends Minz_Extension {
 		}
 
 		if (Minz_Request::isPost()) {
+			$webhooks = [];
+
+			// Parse webhook entries from form
+			for ($i = 0; $i < self::MAX_WEBHOOKS; $i++) {
+				$type = trim(Minz_Request::paramString('webhook_type_' . $i));
+				if ($type === '') {
+					continue;
+				}
+
+				$enabled = Minz_Request::paramString('webhook_enabled_' . $i) === '1';
+
+				if ($type === 'github') {
+					$repo = trim(Minz_Request::paramString('webhook_repo_' . $i));
+					$token = trim(Minz_Request::paramString('webhook_token_' . $i));
+					$eventType = trim(Minz_Request::paramString('webhook_event_type_' . $i));
+
+					if ($repo === '' && $token === '') {
+						continue; // Skip empty entries
+					}
+
+					if ($eventType === '') {
+						$eventType = 'threat-intel-scrape';
+					}
+
+					$webhooks[] = [
+						'type' => 'github',
+						'repo' => $repo,
+						'token' => $token,
+						'event_type' => $eventType,
+						'enabled' => $enabled,
+					];
+				} else {
+					$url = trim(Minz_Request::paramString('webhook_url_' . $i));
+
+					if ($url === '') {
+						continue; // Skip empty entries
+					}
+
+					// Validate HTTPS
+					if (!str_starts_with($url, 'https://')) {
+						Minz_Log::warning('[WebhookNotify] Rejected non-HTTPS webhook URL in configuration');
+						continue;
+					}
+
+					$webhooks[] = [
+						'type' => 'generic',
+						'url' => $url,
+						'enabled' => $enabled,
+					];
+				}
+			}
+
 			$config = [
-				'webhook_url' => trim(Minz_Request::paramString('webhook_url')),
+				'webhooks' => $webhooks,
 				'feed_filter' => trim(Minz_Request::paramString('feed_filter')),
 				'timeout' => max(1, min(30, Minz_Request::paramInt('timeout') ?: self::DEFAULT_TIMEOUT)),
 			];
-
-			// Validate URL
-			if (!empty($config['webhook_url']) && !str_starts_with($config['webhook_url'], 'https://')) {
-				$config['webhook_url'] = '';
-				Minz_Log::warning('[WebhookNotify] Rejected non-HTTPS webhook URL in configuration');
-			}
 
 			$this->setUserConfiguration($config);
 		}
