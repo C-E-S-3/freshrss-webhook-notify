@@ -10,6 +10,7 @@ declare(strict_types=1);
  * Configuration (per-user):
  *   - webhooks: Array of webhook endpoint configs (type, url/repo, token, etc.)
  *   - feed_filter: Comma-separated feed name substrings to match (empty = all feeds)
+ *   - feed_exclude: Comma-separated feed name substrings to exclude (blocklist, checked after feed_filter)
  *   - timeout: HTTP request timeout in seconds (default: 10)
  */
 class WebhookNotifyExtension extends Minz_Extension {
@@ -108,9 +109,10 @@ class WebhookNotifyExtension extends Minz_Extension {
 	 */
 	private function matchesFeedFilter(FreshRSS_Entry $entry, array $config): bool {
 		$filterStr = trim((string)($config['feed_filter'] ?? ''));
+		$excludeStr = trim((string)($config['feed_exclude'] ?? ''));
 
-		// Empty filter means all feeds match
-		if ($filterStr === '') {
+		// No filters at all — everything matches
+		if ($filterStr === '' && $excludeStr === '') {
 			return true;
 		}
 
@@ -120,15 +122,33 @@ class WebhookNotifyExtension extends Minz_Extension {
 		}
 
 		$feedName = strtolower($feed->name());
-		$filters = array_map('trim', explode(',', strtolower($filterStr)));
 
-		foreach ($filters as $filter) {
-			if ($filter !== '' && str_contains($feedName, $filter)) {
-				return true;
+		// Include filter (allowlist): if set, feed must match at least one pattern
+		if ($filterStr !== '') {
+			$filters = array_map('trim', explode(',', strtolower($filterStr)));
+			$included = false;
+			foreach ($filters as $filter) {
+				if ($filter !== '' && str_contains($feedName, $filter)) {
+					$included = true;
+					break;
+				}
+			}
+			if (!$included) {
+				return false;
 			}
 		}
 
-		return false;
+		// Exclude filter (blocklist): if feed matches any pattern, skip it
+		if ($excludeStr !== '') {
+			$excludes = array_map('trim', explode(',', strtolower($excludeStr)));
+			foreach ($excludes as $exclude) {
+				if ($exclude !== '' && str_contains($feedName, $exclude)) {
+					return false;
+				}
+			}
+		}
+
+		return true;
 	}
 
 	/**
@@ -320,6 +340,7 @@ class WebhookNotifyExtension extends Minz_Extension {
 			$config = [
 				'webhooks' => $webhooks,
 				'feed_filter' => trim(Minz_Request::paramString('feed_filter')),
+				'feed_exclude' => trim(Minz_Request::paramString('feed_exclude')),
 				'timeout' => max(1, min(30, Minz_Request::paramInt('timeout') ?: self::DEFAULT_TIMEOUT)),
 			];
 

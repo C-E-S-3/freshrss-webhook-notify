@@ -10,6 +10,7 @@ if (!isset($config['webhooks']) && !empty($config['webhook_url'])) {
 }
 $webhooks = $config['webhooks'] ?? [];
 $feedFilter = htmlspecialchars($config['feed_filter'] ?? '', ENT_QUOTES, 'UTF-8');
+$feedExclude = htmlspecialchars($config['feed_exclude'] ?? '', ENT_QUOTES, 'UTF-8');
 $timeout = (int)($config['timeout'] ?? 10);
 ?>
 
@@ -177,7 +178,10 @@ $timeout = (int)($config['timeout'] ?? 10);
 			</div>
 		<?php endforeach; ?>
 		<div class="webhook-summary-filters">
-			Feed filter: <?= $feedFilter !== '' ? $feedFilter : '<em>all feeds</em>' ?>
+			Include filter: <?= $feedFilter !== '' ? $feedFilter : '<em>all feeds</em>' ?>
+			<?php if ($feedExclude !== ''): ?>
+				<br/>Exclude filter: <?= $feedExclude ?>
+			<?php endif; ?>
 			&nbsp;&bull;&nbsp; Timeout: <?= $timeout ?>s
 		</div>
 	<?php endif; ?>
@@ -257,7 +261,7 @@ $timeout = (int)($config['timeout'] ?? 10);
 
 	<div class="form-group">
 		<label class="group-name" for="feed_filter">
-			Feed filter
+			Include filter
 		</label>
 		<div class="group-controls">
 			<input type="text" id="feed_filter" name="feed_filter"
@@ -266,8 +270,25 @@ $timeout = (int)($config['timeout'] ?? 10);
 				size="80" />
 			<p class="help">
 				Comma-separated substrings to match against feed names.
-				Leave empty to send <em>all</em> feeds.
+				Only matching feeds will be sent. Leave empty to include <em>all</em> feeds.
 				Matching is case-insensitive. Applies to all webhooks.
+			</p>
+		</div>
+	</div>
+
+	<div class="form-group">
+		<label class="group-name" for="feed_exclude">
+			Exclude filter
+		</label>
+		<div class="group-controls">
+			<input type="text" id="feed_exclude" name="feed_exclude"
+				value="<?= $feedExclude ?>"
+				placeholder="reddit, lobsters, slashdot"
+				size="80" />
+			<p class="help">
+				Comma-separated substrings to match against feed names.
+				Matching feeds will <strong>not</strong> be sent to any webhook.
+				Checked after the include filter. Case-insensitive.
 			</p>
 		</div>
 	</div>
